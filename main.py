@@ -1,10 +1,13 @@
 import asyncio
 import logging
+from contextlib import asynccontextmanager
+
 from telebot.async_telebot import AsyncTeleBot
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 import uvicorn
 import httpx
+
 from config import BOT_TOKEN, OWNER_ID, API_URL
 from database import db
 from user import register_user_handlers
@@ -14,9 +17,23 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 bot = AsyncTeleBot(BOT_TOKEN, parse_mode="HTML")
-app = FastAPI(title="LITHOVEX AI", version="1.0")
 
-# ✅ ADMIN handlers first – so /premium, /ban etc. work without AI interference
+# ── Modern lifespan (replaces on_event) ────────────
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Startup
+    try:
+        await db.init()
+        logger.info("✅ Database connected")
+    except Exception as e:
+        logger.error(f"❌ Database init failed: {e}")
+    yield
+    # Shutdown
+    await db.close()
+
+app = FastAPI(title="LITHOVEX AI", version="2.0", lifespan=lifespan)
+
+# Register handlers (admin first so commands work)
 register_admin_handlers(bot)
 register_user_handlers(bot)
 
@@ -38,17 +55,8 @@ async def chat_completions(request: Request):
             logger.error(f"API proxy error: {e}")
             return JSONResponse({"error": "Upstream API failure"}, status_code=502)
 
-@app.on_event("startup")
-async def startup():
-    await db.init()
-    logger.info("Database initialized")
-
-@app.on_event("shutdown")
-async def shutdown():
-    await db.close()
-
 async def run_bot():
-    logger.info("Bot polling started...")
+    logger.info("🤖 Bot polling started...")
     await bot.polling(non_stop=True)
 
 async def main():
