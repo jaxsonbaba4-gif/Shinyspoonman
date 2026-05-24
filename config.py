@@ -5,10 +5,11 @@ load_dotenv()
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 OWNER_ID = int(os.getenv("OWNER_ID", 0))
-API_URL = os.getenv("API_URL")
-DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///lithovex.db")
 
-# Models – grouped for UI
+# PostgreSQL connection string – persistent, cloud-based
+DATABASE_URL = os.getenv("DATABASE_URL")
+
+# Models grouped for UI
 MODELS = {
     "openai": [
         "openai/gpt-5.5-xhigh-codex",
@@ -74,7 +75,6 @@ MODELS = {
     ],
 }
 
-# Fallback chain when primary model fails
 FALLBACK_MODELS = [
     "openai/gpt-4o",
     "anthropic/claude-3.7-sonnet",
@@ -84,3 +84,4 @@ FALLBACK_MODELS = [
 
 DEFAULT_MODEL = "openai/gpt-4.1"
 PREMIUM_MODEL = "openai/gpt-5.5-xhigh-codex"
+API_URL = os.getenv("API_URL", "https://lithovex.up.railway.app/api/chat/completions")
