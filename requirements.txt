@@ -6,3 +6,4 @@ aiosqlite
 python-dotenv
 pydantic
 aiohttp
+asyncpg
