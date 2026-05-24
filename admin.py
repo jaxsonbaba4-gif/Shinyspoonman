@@ -1,163 +1,213 @@
-from telebot.async_telebot import AsyncTeleBot
-from telebot import types
-from config import OWNER_ID
-from database import db
 import asyncio
 import logging
+from datetime import datetime, timedelta
+from telebot.async_telebot import AsyncTeleBot
+from telebot import types
+from config import OWNER_ID, MODELS
+from database import db
 
 logger = logging.getLogger(__name__)
 
 def register_admin_handlers(bot: AsyncTeleBot):
-    async def admin_only(func):
-        async def wrapper(message):
-            if not await db.is_admin(message.from_user.id):
-                await bot.reply_to(message, "⛔ Admin only.")
-                return
-            await func(message)
-        return wrapper
 
-    @bot.message_handler(commands=['broadcast'])
-    @admin_only
-    async def broadcast_cmd(message):
-        # Expect format: /broadcast text
-        parts = message.text.split(maxsplit=1)
-        if len(parts) < 2:
-            await bot.reply_to(message, "Usage: /broadcast <text>")
-            return
-        text = parts[1]
-        await db.log_broadcast(text, message.from_user.id)
-        users = await db.get_all_users()
-        count = 0
-        for user in users:
-            try:
-                await bot.send_message(user["user_id"], f"📢 <b>Announcement</b>\n\n{text}", parse_mode="HTML")
-                count += 1
-                await asyncio.sleep(0.05)  # avoid flood
-            except:
-                pass
-        await bot.reply_to(message, f"✅ Broadcast sent to {count}/{len(users)} users.")
+    async def is_owner(user_id):
+        return user_id == OWNER_ID
 
-    @bot.message_handler(commands=['ban'])
-    @admin_only
-    async def ban_cmd(message):
-        if len(message.text.split()) != 2:
-            await bot.reply_to(message, "Usage: /ban <user_id>")
-            return
-        target = int(message.text.split()[1])
-        await db.ban_user(target)
-        await bot.reply_to(message, f"🚫 User {target} banned.")
-
-    @bot.message_handler(commands=['unban'])
-    @admin_only
-    async def unban_cmd(message):
-        if len(message.text.split()) != 2:
-            await bot.reply_to(message, "Usage: /unban <user_id>")
-            return
-        target = int(message.text.split()[1])
-        await db.unban_user(target)
-        await bot.reply_to(message, f"✅ User {target} unbanned.")
-
+    # ── Dashboard ─────────────────────────────────
     @bot.message_handler(commands=['admin'])
-    @admin_only
-    async def admin_manage(message):
-        parts = message.text.split()
-        if len(parts) < 2:
-            await bot.reply_to(message, "Usage:\n/admin add <id>\n/admin remove <id>\n/admin list")
+    async def admin_dashboard(message):
+        if not await db.is_admin(message.from_user.id):
+            await bot.reply_to(message, "⛔ Admin access only.")
             return
-        action = parts[1]
-        if action == "add" and len(parts) == 3:
-            target = int(parts[2])
-            await db.add_admin(target)
-            await bot.reply_to(message, f"👑 Admin added: {target}")
-        elif action == "remove" and len(parts) == 3:
-            target = int(parts[2])
-            if target == OWNER_ID:
-                await bot.reply_to(message, "Cannot remove the owner.")
-                return
-            await db.remove_admin(target)
-            await bot.reply_to(message, f"Admin removed: {target}")
-        elif action == "list":
-            admins = await db.conn.execute_fetchall("SELECT user_id FROM admins")
-            ids = [str(row[0]) for row in admins]
-            await bot.reply_to(message, "Admins: " + ", ".join(ids))
-        else:
-            await bot.reply_to(message, "Invalid format.")
+        await show_dashboard(message.chat.id, bot, message.message_id)
 
-    @bot.message_handler(commands=['maintenance'])
-    @admin_only
-    async def maintenance_cmd(message):
+    @bot.callback_query_handler(func=lambda call: call.data == "admin_dashboard")
+    async def refresh_dashboard(call):
+        if not await db.is_admin(call.from_user.id):
+            await bot.answer_callback_query(call.id, "Access denied.")
+            return
+        await show_dashboard(call.message.chat.id, bot, call.message.message_id, edit=True)
+        await bot.answer_callback_query(call.id)
+
+    # ── Model manager ─────────────────────────────
+    @bot.callback_query_handler(func=lambda call: call.data == "admin_models")
+    async def model_management(call):
+        if not await db.is_admin(call.from_user.id):
+            await bot.answer_callback_query(call.id, "Access denied.")
+            return
+        await show_model_manager(call.message.chat.id, bot, call.message.message_id)
+        await bot.answer_callback_query(call.id)
+
+    @bot.callback_query_handler(func=lambda call: call.data.startswith("toggle_model_"))
+    async def toggle_model(call):
+        if not await db.is_admin(call.from_user.id):
+            await bot.answer_callback_query(call.id, "Access denied.")
+            return
+        parts = call.data.split("_", 2)
+        model = parts[1]
+        action = parts[2]
+        if action == "lock":
+            current = await db.is_model_locked(model)
+            await db.set_model_locked(model, not current)
+        elif action == "enable":
+            current = await db.is_model_enabled(model)
+            await db.set_model_enabled(model, not current)
+        await show_model_manager(call.message.chat.id, bot, call.message.message_id, edit=True)
+        await bot.answer_callback_query(call.id, "✅ Updated")
+
+    # ── Broadcast system ──────────────────────────
+    @bot.callback_query_handler(func=lambda call: call.data == "admin_broadcast")
+    async def broadcast_prompt(call):
+        if not await db.is_admin(call.from_user.id):
+            await bot.answer_callback_query(call.id, "Access denied.")
+            return
+        await db.set_setting(f"broadcast_{call.from_user.id}", "1")
+        await bot.answer_callback_query(call.id)
+        await bot.send_message(call.message.chat.id, "📣 Send the message you want to broadcast now.\n<i>Type /cancel to abort.</i>", parse_mode="HTML")
+
+    @bot.message_handler(commands=['cancel'])
+    async def cancel_broadcast(message):
+        if await db.is_admin(message.from_user.id):
+            await db.set_setting(f"broadcast_{message.from_user.id}", "0")
+            await bot.reply_to(message, "❌ Broadcast cancelled.")
+
+    # This handler must be registered before the general user handler to intercept broadcasts
+    @bot.message_handler(func=lambda m: True, content_types=['text'])
+    async def maybe_broadcast(message):
+        if not await db.is_admin(message.from_user.id):
+            return  # let user handler take over
+        if await db.get_setting(f"broadcast_{message.from_user.id}", "0") == "1":
+            await db.set_setting(f"broadcast_{message.from_user.id}", "0")
+            users = await db.get_all_users()
+            count = 0
+            for u in users:
+                try:
+                    await bot.send_message(u["user_id"], f"📢 <b>Announcement</b>\n\n{message.text}", parse_mode="HTML")
+                    count += 1
+                    await asyncio.sleep(0.05)
+                except:
+                    pass
+            await bot.reply_to(message, f"✅ Broadcast sent to {count}/{len(users)} users.")
+            return
+        # If not broadcast, pass to user handler (default behavior: do nothing and next handler will catch)
+
+    # ── Maintenance toggle ────────────────────────
+    @bot.callback_query_handler(func=lambda call: call.data == "admin_maintenance_toggle")
+    async def toggle_maintenance(call):
+        if not await db.is_admin(call.from_user.id):
+            await bot.answer_callback_query(call.id, "Access denied.")
+            return
         current = await db.get_setting("maintenance", "0")
         new = "1" if current == "0" else "0"
         await db.set_setting("maintenance", new)
-        state = "🟢 OFF" if new == "0" else "🔴 ON"
-        await bot.reply_to(message, f"Maintenance mode: {state}")
+        await bot.answer_callback_query(call.id, f"Maintenance {'ON' if new=='1' else 'OFF'}")
+        await show_dashboard(call.message.chat.id, bot, call.message.message_id, edit=True)
 
-    @bot.message_handler(commands=['setwelcome'])
-    @admin_only
-    async def set_welcome_cmd(message):
-        text = message.text.split(maxsplit=1)[1] if len(message.text.split()) > 1 else None
-        if not text:
-            await bot.reply_to(message, "Usage: /setwelcome <new welcome text>")
+    # ── Quick text commands (owner only) ──────────
+    @bot.message_handler(commands=['ban'])
+    async def ban_cmd(message):
+        if not await is_owner(message.from_user.id):
             return
-        await db.set_setting("welcome_message", text)
-        await bot.reply_to(message, "✅ Welcome message updated.")
+        parts = message.text.split()
+        if len(parts) != 2:
+            await bot.reply_to(message, "/ban <user_id>")
+            return
+        await db.ban_user(int(parts[1]))
+        await bot.reply_to(message, "🚫 Banned.")
 
-    @bot.message_handler(commands=['lockmodel', 'unlockmodel'])
-    @admin_only
-    async def lock_model(message):
-        cmd = message.text.split()
-        if len(cmd) != 2:
-            await bot.reply_to(message, "Usage: /lockmodel <model_name> or /unlockmodel <model_name>")
+    @bot.message_handler(commands=['unban'])
+    async def unban_cmd(message):
+        if not await is_owner(message.from_user.id):
             return
-        model = cmd[1]
-        lock = message.text.startswith('/lockmodel')
-        await db.set_model_locked(model, lock)
-        status = "locked" if lock else "unlocked"
-        await bot.reply_to(message, f"🔒 Model <code>{model}</code> {status}.", parse_mode="HTML")
-
-    @bot.message_handler(commands=['enablemodel', 'disablemodel'])
-    @admin_only
-    async def enable_model(message):
-        cmd = message.text.split()
-        if len(cmd) != 2:
-            await bot.reply_to(message, "Usage: /enablemodel <model_name> or /disablemodel <model_name>")
+        parts = message.text.split()
+        if len(parts) != 2:
+            await bot.reply_to(message, "/unban <user_id>")
             return
-        model = cmd[1]
-        enable = message.text.startswith('/enablemodel')
-        await db.set_model_enabled(model, enable)
-        status = "enabled" if enable else "disabled"
-        await bot.reply_to(message, f"⚙️ Model <code>{model}</code> {status}.", parse_mode="HTML")
+        await db.unban_user(int(parts[1]))
+        await bot.reply_to(message, "✅ Unbanned.")
 
     @bot.message_handler(commands=['premium'])
-    @admin_only
-    async def set_premium(message):
+    async def premium_cmd(message):
+        if not await is_owner(message.from_user.id):
+            return
         parts = message.text.split()
         if len(parts) < 2:
-            await bot.reply_to(message, "Usage: /premium <user_id> [duration_hours] (default permanent)")
+            await bot.reply_to(message, "/premium <user_id> [hours]")
             return
-        user_id = int(parts[1])
-        duration = None
+        uid = int(parts[1])
+        until = None
         if len(parts) >= 3:
-            hours = int(parts[2])
-            from datetime import datetime, timedelta
-            until = datetime.utcnow() + timedelta(hours=hours)
-            duration = until.isoformat()
-        await db.set_tier(user_id, "premium", premium_until=duration)
-        await bot.reply_to(message, f"🌟 User {user_id} set to premium.")
+            until = (datetime.utcnow() + timedelta(hours=int(parts[2]))).isoformat()
+        await db.set_tier(uid, "premium", premium_until=until)
+        await bot.reply_to(message, f"🌟 User {uid} is now premium.")
 
-    @bot.message_handler(commands=['statsadmin'])
-    @admin_only
-    async def admin_stats(message):
+    @bot.message_handler(commands=['setwelcome'])
+    async def set_welcome_cmd(message):
+        if not await is_owner(message.from_user.id):
+            return
+        text = message.text.split(maxsplit=1)[1] if len(message.text.split()) > 1 else None
+        if not text:
+            await bot.reply_to(message, "/setwelcome <new text>")
+            return
+        await db.set_setting("welcome_message", text)
+        await bot.reply_to(message, "✅ Welcome updated.")
+
+    # ── Dashboard builder ─────────────────────────
+    async def show_dashboard(chat_id, bot, msg_id=None, edit=False):
         users = await db.get_all_users()
         total = len(users)
         banned = sum(1 for u in users if u["banned"])
         premium = sum(1 for u in users if u["tier"] == "premium")
-        total_usage = sum(u["usage_count"] for u in users)
+        usage = sum(u["usage_count"] for u in users)
         text = (
-            f"📊 <b>Admin Stats</b>\n"
-            f"• Total users: {total}\n"
-            f"• Banned: {banned}\n"
-            f"• Premium: {premium}\n"
-            f"• Total requests: {total_usage}\n"
+            f"🛡️ <b>LITHOVEX AI Admin Dashboard</b>\n\n"
+            f"👥 Users: <b>{total}</b>\n"
+            f"🚫 Banned: <b>{banned}</b>\n"
+            f"🌟 Premium: <b>{premium}</b>\n"
+            f"⚡ Total requests: <b>{usage}</b>\n\n"
+            "Select an action:"
         )
-        await bot.reply_to(message, text, parse_mode="HTML")
+        markup = types.InlineKeyboardMarkup(row_width=2)
+        markup.add(
+            types.InlineKeyboardButton("🧠 Model Manager", callback_data="admin_models"),
+            types.InlineKeyboardButton("📣 Broadcast", callback_data="admin_broadcast")
+        )
+        markup.add(
+            types.InlineKeyboardButton("🔄 Refresh", callback_data="admin_dashboard"),
+            types.InlineKeyboardButton("🔧 Maintenance", callback_data="admin_maintenance_toggle")
+        )
+        markup.add(
+            types.InlineKeyboardButton("👑 Admins", callback_data="admin_admins"),
+            types.InlineKeyboardButton("❌ Close", callback_data="close")
+        )
+        if edit and msg_id:
+            await bot.edit_message_text(text, chat_id, msg_id, parse_mode="HTML", reply_markup=markup)
+        else:
+            await bot.send_message(chat_id, text, parse_mode="HTML", reply_markup=markup)
+
+    async def show_model_manager(chat_id, bot, msg_id, edit=False):
+        text = "🧠 <b>Model Configuration</b>\n\n"
+        markup = types.InlineKeyboardMarkup(row_width=2)
+        all_models = [m for sub in MODELS.values() for m in sub]
+        # Show first 8 models for simplicity
+        for model in all_models[:8]:
+            enabled = await db.is_model_enabled(model)
+            locked = await db.is_model_locked(model)
+            status = "🟢" if enabled else "🔴"
+            lock_icon = "🔒" if locked else "🔓"
+            text += f"{status}{lock_icon} <code>{model}</code>\n"
+            markup.add(
+                types.InlineKeyboardButton(
+                    f"{'🔓' if locked else '🔒'} {model.split('/')[-1][:10]}",
+                    callback_data=f"toggle_model_{model}_lock"
+                ),
+                types.InlineKeyboardButton(
+                    f"{'🟢 Enable' if not enabled else '🔴 Disable'}",
+                    callback_data=f"toggle_model_{model}_enable"
+                )
+            )
+        markup.add(types.InlineKeyboardButton("🔙 Back to Dashboard", callback_data="admin_dashboard"))
+        if edit:
+            await bot.edit_message_text(text, chat_id, msg_id, parse_mode="HTML", reply_markup=markup)
+        else:
+            await bot.send_message(chat_id, text, parse_mode="HTML", reply_markup=markup)
