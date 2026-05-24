@@ -1,8 +1,8 @@
 import time
+import logging
 from typing import Dict
 from telebot import types
 from telebot.apihelper import ApiTelegramException
-import logging
 
 logger = logging.getLogger(__name__)
 
@@ -17,30 +17,28 @@ def is_rate_limited(user_id: int) -> bool:
     user_last_request[user_id] = now
     return False
 
-def create_inline_keyboard(buttons: list, row_width: int = 2) -> types.InlineKeyboardMarkup:
-    markup = types.InlineKeyboardMarkup(row_width=row_width)
-    for text, data in buttons:
-        markup.add(types.InlineKeyboardButton(text, callback_data=data))
-    return markup
-
-def build_pagination_keyboard(page: int, total_pages: int, prefix: str) -> types.InlineKeyboardMarkup:
-    markup = types.InlineKeyboardMarkup(row_width=5)
-    if page > 0:
-        markup.add(types.InlineKeyboardButton("⬅️", callback_data=f"{prefix}_page_{page-1}"))
-    markup.add(types.InlineKeyboardButton(f"📄 {page+1}/{total_pages}", callback_data="none"))
-    if page < total_pages - 1:
-        markup.add(types.InlineKeyboardButton("➡️", callback_data=f"{prefix}_page_{page+1}"))
-    return markup
-
 async def safe_edit(bot, chat_id, message_id, text, parse_mode="HTML", reply_markup=None):
-    """Edit message only if content actually changed – avoids 'message is not modified' error."""
+    """Edit message silently ignoring 'not modified' errors"""
     try:
         await bot.edit_message_text(
-            text, chat_id, message_id,
-            parse_mode=parse_mode, reply_markup=reply_markup
+            text=text,
+            chat_id=chat_id,
+            message_id=message_id,
+            parse_mode=parse_mode,
+            reply_markup=reply_markup
         )
     except ApiTelegramException as e:
         if "message is not modified" in str(e):
-            logger.debug("Edit skipped – message identical.")
+            pass  # ignore silently
         else:
-            raise
+            logger.error(f"Edit failed: {e}")
+
+async def safe_answer(bot, callback_id, text=None, show_alert=False):
+    """Answer callback query safely"""
+    try:
+        await bot.answer_callback_query(callback_id, text=text, show_alert=show_alert)
+    except ApiTelegramException as e:
+        if "query is too old" in str(e):
+            pass
+        else:
+            logger.error(f"Answer callback failed: {e}")
