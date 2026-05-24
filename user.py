@@ -5,7 +5,7 @@ from telebot.async_telebot import AsyncTeleBot
 from telebot import types
 from config import MODELS, DEFAULT_MODEL, FALLBACK_MODELS, PREMIUM_MODEL, API_URL, OWNER_ID
 from database import db
-from utils import is_rate_limited
+from utils import is_rate_limited, safe_edit
 
 logger = logging.getLogger(__name__)
 
@@ -16,15 +16,15 @@ def register_user_handlers(bot: AsyncTeleBot):
         user = message.from_user
         await db.add_user(user.id, user.username, user.first_name)
         if OWNER_ID == 0:
-            await bot.send_message(
-                message.chat.id,
-                "⚠️ <b>OWNER_ID not set!</b>\nUse /id to get your ID and set it in environment variables.",
-                parse_mode="HTML"
-            )
-        welcome = await db.get_setting("welcome_message", "👾 Welcome to <b>LITHOVEX AI</b> – the ultimate AI experience.\n\nUse /help to explore, /models to choose a model, and just send a message to begin.")
+            await bot.send_message(message.chat.id,
+                "⚠️ <b>OWNER_ID not set!</b> Use /id to get your ID and set it in env.",
+                parse_mode="HTML")
+        welcome = await db.get_setting("welcome_message",
+            "👾 Welcome to <b>LITHOVEX AI</b> – the ultimate AI experience.\n\n"
+            "Use /help to explore, /models to choose a model, and just send a message to begin.")
         markup = types.InlineKeyboardMarkup()
-        markup.add(types.InlineKeyboardButton("✨ Models", callback_data="menu_models"))
-        markup.add(types.InlineKeyboardButton("ℹ️ Help", callback_data="menu_help"))
+        markup.add(types.InlineKeyboardButton("✨ Models", callback_data="menu_models"),
+                   types.InlineKeyboardButton("ℹ️ Help", callback_data="menu_help"))
         await bot.send_message(message.chat.id, welcome, parse_mode="HTML", reply_markup=markup)
 
     @bot.message_handler(commands=['id'])
@@ -56,12 +56,8 @@ def register_user_handlers(bot: AsyncTeleBot):
         model = call.data.replace("select_model_", "", 1)
         await db.set_setting(f"model_{user_id}", model)
         await bot.answer_callback_query(call.id, f"✅ Model set to {model.split('/')[-1]}")
-        await bot.edit_message_text(
-            f"✅ Model changed to <b>{model}</b>",
-            call.message.chat.id,
-            call.message.message_id,
-            parse_mode="HTML"
-        )
+        await safe_edit(bot, call.message.chat.id, call.message.message_id,
+                        f"✅ Model changed to <b>{model}</b>")
 
     @bot.message_handler(commands=['stats'])
     async def user_stats(message):
@@ -70,12 +66,10 @@ def register_user_handlers(bot: AsyncTeleBot):
         tier = user["tier"] if user else "free"
         premium = await db.is_premium(message.from_user.id)
         model = await db.get_setting(f"model_{message.from_user.id}", DEFAULT_MODEL)
-        stats = (
-            f"📊 <b>Your Stats</b>\n"
-            f"• Requests: {usage}\n"
-            f"• Tier: {tier.capitalize()}{' 🌟' if premium else ''}\n"
-            f"• Selected model: <code>{model}</code>"
-        )
+        stats = (f"📊 <b>Your Stats</b>\n"
+                 f"• Requests: {usage}\n"
+                 f"• Tier: {tier.capitalize()}{' 🌟' if premium else ''}\n"
+                 f"• Selected model: <code>{model}</code>")
         await bot.send_message(message.chat.id, stats, parse_mode="HTML")
 
     @bot.message_handler(func=lambda m: True, content_types=['text'])
@@ -87,7 +81,6 @@ def register_user_handlers(bot: AsyncTeleBot):
             await bot.send_message(message.chat.id, "⚠️ Please wait a few seconds.")
             return
 
-        # "Who created you?" answer
         if message.text.strip().lower() in ["who created you?", "who made you?", "creator"]:
             await bot.send_message(message.chat.id, "I was developed by @normaluser2")
             return
@@ -102,15 +95,15 @@ def register_user_handlers(bot: AsyncTeleBot):
 
         model = await db.get_setting(f"model_{user.id}", DEFAULT_MODEL)
 
-        # Model restriction checks
+        # Model restrictions
         if not await db.is_model_enabled(model):
             await bot.send_message(message.chat.id, f"🚫 Model <code>{model}</code> is disabled.", parse_mode="HTML")
             return
         if await db.is_model_locked(model) and not await db.is_admin(user.id):
-            await bot.send_message(message.chat.id, f"🔒 Model <code>{model}</code> is locked by the owner.", parse_mode="HTML")
+            await bot.send_message(message.chat.id, f"🔒 Model <code>{model}</code> is locked.", parse_mode="HTML")
             return
         if model == PREMIUM_MODEL and not await db.is_premium(user.id) and user.id != OWNER_ID:
-            await bot.send_message(message.chat.id, "🌟 This model requires premium. Use /models to choose another.")
+            await bot.send_message(message.chat.id, "🌟 This model requires premium.")
             return
 
         thinking_msg = await bot.send_message(message.chat.id, "💭 <i>LITHOVEX AI is thinking...</i>", parse_mode="HTML")
@@ -137,7 +130,8 @@ def register_user_handlers(bot: AsyncTeleBot):
                     logger.error(f"Fallback {fb} also failed: {e2}")
 
         if not response_text:
-            await bot.edit_message_text("❌ All models failed. Please try later.", thinking_msg.chat.id, thinking_msg.message_id)
+            await safe_edit(bot, thinking_msg.chat.id, thinking_msg.message_id,
+                            "❌ All models failed. Please try later.")
             return
 
         await db.add_message(user.id, "assistant", response_text)
@@ -150,7 +144,7 @@ def register_user_handlers(bot: AsyncTeleBot):
             types.InlineKeyboardButton("📋 Copy", callback_data=f"copy_{message.message_id}"),
             types.InlineKeyboardButton("❌ Close", callback_data="close")
         )
-        await bot.edit_message_text(final_text, thinking_msg.chat.id, thinking_msg.message_id, parse_mode="HTML", reply_markup=reply_markup)
+        await safe_edit(bot, thinking_msg.chat.id, thinking_msg.message_id, final_text, reply_markup=reply_markup)
 
     @bot.callback_query_handler(func=lambda call: call.data == "close")
     async def close_message(call):
@@ -169,7 +163,7 @@ async def send_help(chat_id, bot, edit_message=None):
     markup = types.InlineKeyboardMarkup()
     markup.add(types.InlineKeyboardButton("📂 Models", callback_data="menu_models"))
     if edit_message:
-        await bot.edit_message_text(help_text, chat_id, edit_message.message_id, parse_mode="HTML", reply_markup=markup)
+        await safe_edit(bot, chat_id, edit_message.message_id, help_text, reply_markup=markup)
     else:
         await bot.send_message(chat_id, help_text, parse_mode="HTML", reply_markup=markup)
 
@@ -193,7 +187,8 @@ async def show_models_page(chat_id, page, bot, edit_message=None):
 
     markup = types.InlineKeyboardMarkup(row_width=1)
     for _, model in page_models:
-        markup.add(types.InlineKeyboardButton(f"✅ Select {model.split('/')[-1]}", callback_data=f"select_model_{model}"))
+        markup.add(types.InlineKeyboardButton(f"✅ Select {model.split('/')[-1]}",
+                                              callback_data=f"select_model_{model}"))
     if total_pages > 1:
         nav_buttons = []
         if page > 0:
@@ -204,7 +199,7 @@ async def show_models_page(chat_id, page, bot, edit_message=None):
             markup.add(*nav_buttons)
 
     if edit_message:
-        await bot.edit_message_text(text, chat_id, edit_message.message_id, parse_mode="HTML", reply_markup=markup)
+        await safe_edit(bot, chat_id, edit_message.message_id, text, reply_markup=markup)
     else:
         await bot.send_message(chat_id, text, parse_mode="HTML", reply_markup=markup)
 
@@ -232,12 +227,8 @@ async def stream_api_response(bot, message, messages, model):
                             if delta:
                                 accumulated += delta
                                 if len(accumulated) - last_update > 5:
-                                    await bot.edit_message_text(
-                                        accumulated + "\n\n💭 <i>Generating...</i>",
-                                        message.chat.id,
-                                        message.message_id,
-                                        parse_mode="HTML"
-                                    )
+                                    await safe_edit(bot, message.chat.id, message.message_id,
+                                                    accumulated + "\n\n💭 <i>Generating...</i>")
                                     last_update = len(accumulated)
                         except:
                             continue
