@@ -16,8 +16,9 @@ logger = logging.getLogger(__name__)
 bot = AsyncTeleBot(BOT_TOKEN, parse_mode="HTML")
 app = FastAPI(title="LITHOVEX AI", version="1.0")
 
-register_user_handlers(bot)
+# ✅ Register admin handlers FIRST so owner commands work instantly
 register_admin_handlers(bot)
+register_user_handlers(bot)
 
 @app.post("/api/chat/completions")
 async def chat_completions(request: Request):
