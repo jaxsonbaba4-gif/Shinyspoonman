@@ -16,7 +16,7 @@ logger = logging.getLogger(__name__)
 bot = AsyncTeleBot(BOT_TOKEN, parse_mode="HTML")
 app = FastAPI(title="LITHOVEX AI", version="1.0")
 
-# ✅ Register admin handlers FIRST so owner commands work instantly
+# ✅ ADMIN handlers first – so /premium, /ban etc. work without AI interference
 register_admin_handlers(bot)
 register_user_handlers(bot)
 
