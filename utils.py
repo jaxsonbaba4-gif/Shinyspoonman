@@ -1,9 +1,13 @@
 import time
 from typing import Dict
 from telebot import types
+from telebot.apihelper import ApiTelegramException
+import logging
+
+logger = logging.getLogger(__name__)
 
 user_last_request: Dict[int, float] = {}
-RATE_LIMIT = 3  # seconds
+RATE_LIMIT = 3
 
 def is_rate_limited(user_id: int) -> bool:
     now = time.time()
@@ -27,3 +31,16 @@ def build_pagination_keyboard(page: int, total_pages: int, prefix: str) -> types
     if page < total_pages - 1:
         markup.add(types.InlineKeyboardButton("➡️", callback_data=f"{prefix}_page_{page+1}"))
     return markup
+
+async def safe_edit(bot, chat_id, message_id, text, parse_mode="HTML", reply_markup=None):
+    """Edit message only if content actually changed – avoids 'message is not modified' error."""
+    try:
+        await bot.edit_message_text(
+            text, chat_id, message_id,
+            parse_mode=parse_mode, reply_markup=reply_markup
+        )
+    except ApiTelegramException as e:
+        if "message is not modified" in str(e):
+            logger.debug("Edit skipped – message identical.")
+        else:
+            raise
