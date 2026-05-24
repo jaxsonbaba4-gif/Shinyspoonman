@@ -10,10 +10,7 @@ class Database:
 
     async def init(self):
         self.pool = await asyncpg.create_pool(
-            dsn=DATABASE_URL,
-            min_size=2,
-            max_size=10,
-            ssl="require"  # required for Neon
+            dsn=DATABASE_URL, min_size=2, max_size=10
         )
         await self._create_tables()
 
@@ -57,7 +54,6 @@ class Database:
                     timestamp TIMESTAMP DEFAULT NOW()
                 );
             """)
-            # Make owner an admin automatically
             await conn.execute(
                 "INSERT INTO admins (user_id) VALUES ($1) ON CONFLICT DO NOTHING",
                 OWNER_ID
@@ -66,6 +62,15 @@ class Database:
     async def close(self):
         if self.pool:
             await self.pool.close()
+
+    async def ensure_user(self, user_id: int):
+        """Insert a bare user row if not already present."""
+        async with self.pool.acquire() as conn:
+            await conn.execute(
+                "INSERT INTO users (user_id, username, first_name, last_active, usage_count) "
+                "VALUES ($1, 'unknown', 'unknown', NOW(), 0) ON CONFLICT (user_id) DO NOTHING",
+                user_id
+            )
 
     async def get_user(self, user_id: int):
         async with self.pool.acquire() as conn:
@@ -111,6 +116,7 @@ class Database:
         return False
 
     async def ban_user(self, user_id: int):
+        await self.ensure_user(user_id)  # create user first if not exists
         async with self.pool.acquire() as conn:
             await conn.execute("UPDATE users SET banned = TRUE WHERE user_id = $1", user_id)
 
@@ -213,8 +219,7 @@ class Database:
     async def log_broadcast(self, text: str, sender_id: int):
         async with self.pool.acquire() as conn:
             await conn.execute(
-                "INSERT INTO broadcasts (text, sent_by) VALUES ($1, $2)",
-                text, sender_id
+                "INSERT INTO broadcasts (text, sent_by) VALUES ($1, $2)", text, sender_id
             )
 
 db = Database()
